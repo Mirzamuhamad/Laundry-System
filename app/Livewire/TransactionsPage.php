@@ -37,6 +37,8 @@ class TransactionsPage extends Component
 
     public int $perPage = 10;
 
+    public bool $dueTodayOnly = false;
+
     public function mount(): void
     {
         if (! Auth::user()->isOwner()) {
@@ -46,7 +48,7 @@ class TransactionsPage extends Component
 
     public function updated($property): void
     {
-        if (in_array($property, ['search', 'status', 'paymentStatus', 'outletId', 'dateFrom', 'dateTo'], true)) {
+        if (in_array($property, ['search', 'status', 'paymentStatus', 'outletId', 'dateFrom', 'dateTo', 'dueTodayOnly'], true)) {
             $this->resetPage();
         }
 
@@ -83,7 +85,7 @@ class TransactionsPage extends Component
         $this->dispatch(
             'print-receipt',
             text: resolve(BluetoothReceipt::class)->build($order),
-            fallbackUrl: route('transactions.receipt', ['order' => $order, 'autoprint' => 1]),
+            fallbackUrl: route('transactions.receipt', $order),
         );
     }
 
@@ -102,8 +104,25 @@ class TransactionsPage extends Component
 
     public function render()
     {
-        $orders = Order::with(['outlet', 'user'])->when(! Auth::user()->isOwner(), fn ($q) => $q->where('outlet_id', Auth::user()->outlet_id))->when($this->outletId, fn ($q) => $q->where('outlet_id', $this->outletId))->when($this->search, fn ($q) => $q->where(fn ($s) => $s->where('number', 'like', '%'.$this->search.'%')->orWhere('customer_name', 'like', '%'.$this->search.'%')->orWhere('customer_phone', 'like', '%'.$this->search.'%')))->when($this->status, fn ($q) => $q->where('status', $this->status))->when($this->paymentStatus, fn ($q) => $q->where('payment_status', $this->paymentStatus))->when($this->dateFrom, fn ($q) => $q->whereDate('created_at', '>=', $this->dateFrom))->when($this->dateTo, fn ($q) => $q->whereDate('created_at', '<=', $this->dateTo))->latest()->paginate($this->perPage);
+        $dueTodayCount = Order::query()
+            ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
+            ->when($this->outletId, fn ($query) => $query->where('outlet_id', $this->outletId))
+            ->whereDate('due_at', today())
+            ->whereNotIn('status', ['ready', 'completed', 'cancelled'])
+            ->count();
 
-        return view('livewire.transactions-page', ['orders' => $orders, 'outlets' => Outlet::where('is_active', true)->get()])->title('Transaksi — Laundry Pos');
+        $orders = Order::with(['outlet', 'user', 'items'])
+            ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
+            ->when($this->outletId, fn ($query) => $query->where('outlet_id', $this->outletId))
+            ->when($this->search, fn ($query) => $query->where(fn ($searchQuery) => $searchQuery->where('number', 'like', '%'.$this->search.'%')->orWhere('customer_name', 'like', '%'.$this->search.'%')->orWhere('customer_phone', 'like', '%'.$this->search.'%')))
+            ->when($this->status, fn ($query) => $query->where('status', $this->status))
+            ->when($this->paymentStatus, fn ($query) => $query->where('payment_status', $this->paymentStatus))
+            ->when($this->dateFrom, fn ($query) => $query->whereDate('created_at', '>=', $this->dateFrom))
+            ->when($this->dateTo, fn ($query) => $query->whereDate('created_at', '<=', $this->dateTo))
+            ->when($this->dueTodayOnly, fn ($query) => $query->whereDate('due_at', today())->whereNotIn('status', ['ready', 'completed', 'cancelled']))
+            ->when($this->dueTodayOnly, fn ($query) => $query->orderBy('due_at'), fn ($query) => $query->latest())
+            ->paginate($this->perPage);
+
+        return view('livewire.transactions-page', ['orders' => $orders, 'outlets' => Outlet::where('is_active', true)->get(), 'dueTodayCount' => $dueTodayCount])->title('Transaksi — Laundry Pos');
     }
 }

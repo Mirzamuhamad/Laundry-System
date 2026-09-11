@@ -35,6 +35,6 @@
         <div class="line"></div>
         <div class="center"><span class="muted">Simpan struk ini sebagai bukti pengambilan.<br>Terima kasih sudah mempercayai kami.</span></div>
     </article>
-    @if(request('autoprint'))<script>window.addEventListener('load',()=>window.print())</script>@endif
+    @if(request('autoprint'))<script>window.addEventListener('load',()=>window.print());window.addEventListener('afterprint',()=>window.close())</script>@endif
 </body>
 </html>

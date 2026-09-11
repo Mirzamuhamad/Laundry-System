@@ -12,6 +12,7 @@ use App\Livewire\PosPage;
 use App\Livewire\ProductsPage;
 use App\Livewire\ReportsPage;
 use App\Livewire\TransactionsPage;
+use App\Livewire\UserAccountsPage;
 use Illuminate\Support\Facades\Route;
 
 Route::redirect('/', '/dashboard');
@@ -36,6 +37,7 @@ Route::middleware('auth')->group(function () {
         Route::get('/reports', ReportsPage::class)->name('reports');
         Route::get('/reports/export', ReportExportController::class)->name('reports.export');
         Route::get('/management', ManagementPage::class)->name('management');
+        Route::get('/user-login', UserAccountsPage::class)->name('user-accounts');
     });
 
     Route::post('/logout', [AuthController::class, 'destroy'])->name('logout');

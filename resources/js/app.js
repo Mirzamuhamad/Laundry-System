@@ -155,16 +155,42 @@ const restoreGrantedPrinter = () => bluetoothPrinter.connect(false).catch(() => 
 document.addEventListener('livewire:navigated', restoreGrantedPrinter);
 restoreGrantedPrinter();
 
+const printReceiptInPlace = url => {
+    const frame = document.createElement('iframe');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.cssText = 'position:fixed;width:1px;height:1px;border:0;right:0;bottom:0;opacity:0;pointer-events:none';
+
+    let cleanedUp = false;
+    const cleanup = () => {
+        if (cleanedUp) return;
+
+        cleanedUp = true;
+        frame.remove();
+        window.focus();
+        window.dispatchEvent(new CustomEvent('receipt-print-finished'));
+    };
+    frame.addEventListener('load', () => {
+        const printWindow = frame.contentWindow;
+        if (!printWindow) { cleanup(); return; }
+        printWindow.addEventListener('afterprint', cleanup, { once: true });
+        window.setTimeout(() => { printWindow.focus(); printWindow.print(); }, 50);
+        window.setTimeout(cleanup, 120000);
+    }, { once: true });
+    frame.src = url;
+    document.body.appendChild(frame);
+};
+
 window.addEventListener('print-receipt', async event => {
     if (!bluetoothPrinter.isConnected()) {
-        window.dispatchEvent(new CustomEvent('notify', { detail: 'Printer belum terhubung. Membuka cetak browser.' }));
-        if (event.detail.fallbackUrl) window.open(event.detail.fallbackUrl, '_blank');
+        window.dispatchEvent(new CustomEvent('notify', { detail: 'Printer belum terhubung. Menyiapkan cetak browser.' }));
+        if (event.detail.fallbackUrl) printReceiptInPlace(event.detail.fallbackUrl);
         return;
     }
 
     try {
         await bluetoothPrinter.print(event.detail.text);
         window.dispatchEvent(new CustomEvent('notify', { detail: 'Struk berhasil dikirim ke printer.' }));
+        window.dispatchEvent(new CustomEvent('receipt-print-finished'));
     } catch (error) {
         window.dispatchEvent(new CustomEvent('notify', { detail: error.message || 'Cetak Bluetooth gagal. Periksa printer lalu coba lagi.' }));
     }

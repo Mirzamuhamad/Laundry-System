@@ -7,6 +7,7 @@ use App\Models\Customer;
 use App\Models\EmployeeSchedule;
 use App\Models\Outlet;
 use App\Models\Product;
+use App\Models\ServiceLevel;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
@@ -40,9 +41,10 @@ class DatabaseSeeder extends Seeder
             [$lain->id, 'Cuci Sepatu', 'pasang', 35000, 0, 0, 72],
             [$lain->id, 'Cuci Karpet', 'meter', 20000, 0, .5, 96],
         ];
+        $regularServiceLevel = ServiceLevel::where('name', 'Reguler')->firstOrFail();
         foreach ($products as [$category, $name, $unit, $price, $minimum, $rounding, $hours]) {
             $product = Product::firstOrCreate(['name' => $name], ['category_id' => $category, 'unit' => $unit, 'price' => $price, 'minimum_quantity' => $minimum, 'rounding_increment' => $rounding, 'duration_hours' => $hours]);
-            $product->variants()->firstOrCreate(['name' => 'Reguler'], ['price' => $product->price, 'duration_hours' => $product->duration_hours, 'is_active' => true, 'sort_order' => 0]);
+            $product->variants()->firstOrCreate(['name' => 'Reguler'], ['service_level_id' => $regularServiceLevel->id, 'price' => $product->price, 'duration_hours' => $product->duration_hours, 'is_active' => true, 'sort_order' => 0]);
         }
         Customer::firstOrCreate(['phone' => '081234567890'], ['outlet_id' => $main->id, 'name' => 'Budi Santoso', 'address' => 'Jakarta']);
     }

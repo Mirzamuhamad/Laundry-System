@@ -5,8 +5,11 @@ namespace App\Livewire;
 use App\Models\Category;
 use App\Models\Outlet;
 use App\Models\Product;
+use App\Models\ServiceLevel;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
 use Livewire\Component;
 use Livewire\WithPagination;
@@ -40,7 +43,19 @@ class ProductsPage extends Component
 
     public string $deletingProductName = '';
 
-    /** @var array<int, array{id: int|null, name: string, price: int|string, duration_hours: int|string, is_active: bool}> */
+    public bool $showServiceLevelMaster = false;
+
+    public ?int $editingServiceLevelId = null;
+
+    public string $serviceLevelName = '';
+
+    public $serviceLevelDurationHours = 24;
+
+    public ?int $deletingServiceLevelId = null;
+
+    public string $deletingServiceLevelName = '';
+
+    /** @var array<int, array{id: int|null, service_level_id: int|null, price: int|string, is_active: bool}> */
     public array $variants = [];
 
     public function updatedSearch(): void
@@ -53,20 +68,20 @@ class ProductsPage extends Component
         $this->resetForm();
         if ($id) {
             $product = Product::with('variants')->findOrFail($id);
+            $serviceLevelsByName = ServiceLevel::query()->get()->keyBy(fn (ServiceLevel $serviceLevel): string => mb_strtolower($serviceLevel->name));
             $this->editingId = $product->id;
             foreach (['name', 'category_id', 'outlet_id', 'unit', 'minimum_quantity', 'rounding_increment'] as $field) {
                 $this->{$field} = $product->{$field};
             }
             $this->variants = $product->variants->map(fn ($variant): array => [
                 'id' => $variant->id,
-                'name' => $variant->name,
+                'service_level_id' => $variant->service_level_id ?? $serviceLevelsByName->get(mb_strtolower($variant->name))?->id,
                 'price' => $variant->price,
-                'duration_hours' => $variant->duration_hours,
                 'is_active' => $variant->is_active,
             ])->all();
 
             if ($this->variants === []) {
-                $this->variants = [$this->defaultVariant($product->price, $product->duration_hours)];
+                $this->variants = [$this->defaultVariant($product->price)];
             }
         }
         $this->showForm = true;
@@ -74,7 +89,15 @@ class ProductsPage extends Component
 
     public function addVariant(): void
     {
-        $this->variants[] = $this->defaultVariant();
+        $variant = $this->defaultVariant();
+
+        if ($variant['service_level_id'] === null) {
+            $this->addError('variants', 'Semua master varian aktif sudah digunakan.');
+
+            return;
+        }
+
+        $this->variants[] = $variant;
     }
 
     public function removeVariant(int $index): void
@@ -97,9 +120,8 @@ class ProductsPage extends Component
             'outlet_id' => ['nullable', 'exists:outlets,id'], 'unit' => ['required', 'string', 'max:20'],
             'minimum_quantity' => ['required', 'numeric', 'min:0'], 'rounding_increment' => ['required', 'numeric', 'min:0'],
             'variants' => ['required', 'array', 'min:1'], 'variants.*.id' => ['nullable', 'integer'],
-            'variants.*.name' => ['required', 'string', 'max:50', 'distinct:ignore_case'],
+            'variants.*.service_level_id' => ['required', 'integer', 'distinct', Rule::exists('service_levels', 'id')->where('is_active', true)],
             'variants.*.price' => ['required', 'integer', 'min:0'],
-            'variants.*.duration_hours' => ['required', 'integer', 'min:1', 'max:720'],
             'variants.*.is_active' => ['required', 'boolean'],
         ]);
 
@@ -112,10 +134,12 @@ class ProductsPage extends Component
         DB::transaction(function () use ($data): void {
             $variants = $data['variants'];
             unset($data['variants']);
+            $serviceLevels = ServiceLevel::query()->whereIn('id', collect($variants)->pluck('service_level_id'))->get()->keyBy('id');
 
             $primaryVariant = collect($variants)->firstWhere('is_active', true);
+            $primaryServiceLevel = $serviceLevels->get($primaryVariant['service_level_id']);
             $data['price'] = $primaryVariant['price'];
-            $data['duration_hours'] = $primaryVariant['duration_hours'];
+            $data['duration_hours'] = $primaryServiceLevel->duration_hours;
 
             $product = Product::updateOrCreate(['id' => $this->editingId], $data);
             $existingVariants = $product->variants()->get()->keyBy('id');
@@ -123,10 +147,12 @@ class ProductsPage extends Component
 
             foreach ($variants as $sortOrder => $variantData) {
                 $variant = isset($variantData['id']) ? $existingVariants->get($variantData['id']) : null;
+                $serviceLevel = $serviceLevels->get($variantData['service_level_id']);
                 $attributes = [
-                    'name' => $variantData['name'],
+                    'service_level_id' => $serviceLevel->id,
+                    'name' => $serviceLevel->name,
                     'price' => $variantData['price'],
-                    'duration_hours' => $variantData['duration_hours'],
+                    'duration_hours' => $serviceLevel->duration_hours,
                     'is_active' => $variantData['is_active'],
                     'sort_order' => $sortOrder,
                 ];
@@ -186,20 +212,131 @@ class ProductsPage extends Component
         $this->dispatch('notify', 'Produk berhasil dihapus.');
     }
 
+    public function openServiceLevelMaster(): void
+    {
+        $this->authorizeOwner();
+        $this->resetServiceLevelForm();
+        $this->showServiceLevelMaster = true;
+    }
+
+    public function closeServiceLevelMaster(): void
+    {
+        $this->showServiceLevelMaster = false;
+        $this->resetServiceLevelForm();
+        $this->reset(['deletingServiceLevelId', 'deletingServiceLevelName']);
+    }
+
+    public function editServiceLevel(int $id): void
+    {
+        $this->authorizeOwner();
+        $serviceLevel = ServiceLevel::findOrFail($id);
+
+        $this->editingServiceLevelId = $serviceLevel->id;
+        $this->serviceLevelName = $serviceLevel->name;
+        $this->serviceLevelDurationHours = $serviceLevel->duration_hours;
+        $this->resetValidation();
+    }
+
+    public function saveServiceLevel(): void
+    {
+        $this->authorizeOwner();
+        $this->serviceLevelName = Str::of($this->serviceLevelName)->squish()->toString();
+        $data = $this->validate([
+            'serviceLevelName' => ['required', 'string', 'max:50', Rule::unique('service_levels', 'name')->ignore($this->editingServiceLevelId)],
+            'serviceLevelDurationHours' => ['required', 'integer', 'min:1', 'max:720'],
+        ]);
+
+        $duplicateExists = ServiceLevel::query()
+            ->whereRaw('lower(name) = ?', [mb_strtolower($data['serviceLevelName'])])
+            ->when($this->editingServiceLevelId, fn ($query) => $query->where('id', '!=', $this->editingServiceLevelId))
+            ->exists();
+
+        if ($duplicateExists) {
+            $this->addError('serviceLevelName', 'Nama varian sudah digunakan.');
+
+            return;
+        }
+
+        DB::transaction(function () use ($data): void {
+            $serviceLevel = $this->editingServiceLevelId
+                ? ServiceLevel::findOrFail($this->editingServiceLevelId)
+                : new ServiceLevel(['is_active' => true, 'sort_order' => ((int) ServiceLevel::max('sort_order')) + 1]);
+            $serviceLevel->fill([
+                'name' => $data['serviceLevelName'],
+                'duration_hours' => $data['serviceLevelDurationHours'],
+            ])->save();
+            $serviceLevel->productVariants()->update([
+                'name' => $serviceLevel->name,
+                'duration_hours' => $serviceLevel->duration_hours,
+            ]);
+        });
+
+        $this->resetServiceLevelForm();
+        $this->dispatch('notify', 'Master varian berhasil disimpan.');
+    }
+
+    public function confirmDeleteServiceLevel(int $id): void
+    {
+        $this->authorizeOwner();
+        $serviceLevel = ServiceLevel::findOrFail($id);
+
+        $this->deletingServiceLevelId = $serviceLevel->id;
+        $this->deletingServiceLevelName = $serviceLevel->name;
+        $this->resetValidation('deleteServiceLevel');
+    }
+
+    public function cancelDeleteServiceLevel(): void
+    {
+        $this->reset(['deletingServiceLevelId', 'deletingServiceLevelName']);
+        $this->resetValidation('deleteServiceLevel');
+    }
+
+    public function deleteServiceLevel(): void
+    {
+        $this->authorizeOwner();
+        $serviceLevel = ServiceLevel::findOrFail($this->deletingServiceLevelId);
+
+        if ($serviceLevel->productVariants()->exists()) {
+            $this->addError('deleteServiceLevel', 'Master varian masih digunakan oleh produk dan tidak dapat dihapus.');
+
+            return;
+        }
+
+        $serviceLevel->delete();
+        $this->cancelDeleteServiceLevel();
+        $this->dispatch('notify', 'Master varian berhasil dihapus.');
+    }
+
     private function resetForm(): void
     {
         $this->reset(['editingId', 'name', 'category_id', 'outlet_id', 'newCategory']);
         $this->unit = 'kg';
         $this->minimum_quantity = 0;
         $this->rounding_increment = 0;
-        $this->variants = [$this->defaultVariant(8000, 72)];
+        $this->variants = [];
+        $this->variants = [$this->defaultVariant(8000)];
         $this->resetValidation();
     }
 
-    /** @return array{id: null, name: string, price: int, duration_hours: int, is_active: bool} */
-    private function defaultVariant(int $price = 0, int $durationHours = 24): array
+    public function resetServiceLevelForm(): void
     {
-        return ['id' => null, 'name' => 'Reguler', 'price' => $price, 'duration_hours' => $durationHours, 'is_active' => true];
+        $this->reset(['editingServiceLevelId', 'serviceLevelName']);
+        $this->serviceLevelDurationHours = 24;
+        $this->resetValidation();
+    }
+
+    /** @return array{id: null, service_level_id: int|null, price: int, is_active: bool} */
+    private function defaultVariant(int $price = 0): array
+    {
+        $usedServiceLevelIds = collect($this->variants)->pluck('service_level_id')->filter()->all();
+        $serviceLevelId = ServiceLevel::query()
+            ->where('is_active', true)
+            ->whereNotIn('id', $usedServiceLevelIds)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->value('id');
+
+        return ['id' => null, 'service_level_id' => $serviceLevelId, 'price' => $price, 'is_active' => true];
     }
 
     private function authorizeOwner(): void
@@ -211,6 +348,6 @@ class ProductsPage extends Component
     {
         $products = Product::with(['category', 'outlet', 'variants'])->when($this->search, fn ($q) => $q->where('name', 'like', '%'.$this->search.'%'))->latest()->paginate(12);
 
-        return view('livewire.products-page', ['products' => $products, 'categories' => Category::orderBy('name')->get(), 'outlets' => Outlet::where('is_active', true)->get()])->title('Produk — Laundry Pos');
+        return view('livewire.products-page', ['products' => $products, 'categories' => Category::orderBy('name')->get(), 'outlets' => Outlet::where('is_active', true)->get(), 'serviceLevels' => ServiceLevel::where('is_active', true)->withCount('productVariants')->orderBy('sort_order')->orderBy('id')->get()])->title('Produk — Laundry Pos');
     }
 }

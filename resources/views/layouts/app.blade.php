@@ -30,6 +30,7 @@
                     <a href="{{ route('products') }}" class="nav-item {{ request()->routeIs('products') ? 'active' : '' }}" title="Produk" wire:navigate><span>◇</span><span class="nav-label">Produk</span></a>
                     <a href="{{ route('expenses') }}" class="nav-item {{ request()->routeIs('expenses') ? 'active' : '' }}" title="Expense" wire:navigate><span>&#8599;&#65038;</span><span class="nav-label">Expense</span></a>
                     <a href="{{ route('reports') }}" class="nav-item {{ request()->routeIs('reports') ? 'active' : '' }}" title="Laporan" wire:navigate><span>▥</span><span class="nav-label">Laporan</span></a>
+                    <a href="{{ route('user-accounts') }}" class="nav-item {{ request()->routeIs('user-accounts') ? 'active' : '' }}" title="User Login" wire:navigate><span class="nav-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span class="nav-label">User Login</span></a>
                     <a href="{{ route('management') }}" class="nav-item {{ request()->routeIs('management') ? 'active' : '' }}" title="Pengaturan" wire:navigate><span>⚙</span><span class="nav-label">Pengaturan</span></a>
                 @endif
             </nav>
@@ -55,10 +56,11 @@
                 <a data-mobile-nav-item href="{{ route('attendance') }}" class="{{ request()->routeIs('attendance') ? 'active' : '' }}" wire:navigate><span>◉</span><small>Absen</small></a>
             @endif
             <div data-mobile-nav-item class="bottom-more" x-on:click.outside="moreOpen = false">
-                <button type="button" class="bottom-more-toggle {{ request()->routeIs('attendance') && auth()->user()->isOwner() ? 'active' : '' }}" x-on:click="moreOpen = ! moreOpen" :aria-expanded="moreOpen" aria-haspopup="true"><span>•••</span><small>More</small></button>
+                <button type="button" class="bottom-more-toggle {{ request()->routeIs('attendance', 'user-accounts') && auth()->user()->isOwner() ? 'active' : '' }}" x-on:click="moreOpen = ! moreOpen" :aria-expanded="moreOpen" aria-haspopup="true"><span>•••</span><small>More</small></button>
                 <div class="bottom-more-menu" x-show="moreOpen" x-transition.origin.bottom.right x-cloak>
                     @if(auth()->user()->isOwner())
                         <a href="{{ route('attendance') }}" class="{{ request()->routeIs('attendance') ? 'active' : '' }}" x-on:click="moreOpen = false" wire:navigate><span>◉</span><span><strong>Absensi</strong><small>Catat kehadiran</small></span></a>
+                        <a href="{{ route('user-accounts') }}" class="{{ request()->routeIs('user-accounts') ? 'active' : '' }}" x-on:click="moreOpen = false" wire:navigate><span class="bottom-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span><strong>User Login</strong><small>Kelola akses akun</small></span></a>
                     @endif
                     <form method="POST" action="{{ route('logout') }}" x-on:submit.prevent="moreOpen = false; askLogout($event)">@csrf<button type="submit"><span class="bottom-logout-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg></span><span><strong>Keluar</strong><small>Akhiri sesi</small></span></button></form>
                 </div>

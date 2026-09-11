@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
+use Livewire\Attributes\On;
 use Livewire\Component;
 
 #[Layout('layouts.app')]
@@ -54,6 +55,8 @@ class PosPage extends Component
 
     public bool $saving = false;
 
+    public ?int $completedOrderId = null;
+
     public function mount(): void
     {
         $user = Auth::user();
@@ -89,22 +92,13 @@ class PosPage extends Component
         }
 
         $productId = (int) $this->cart[$key]['product_id'];
-        $variant = ProductVariant::query()
-            ->where('product_id', $productId)
+        $product = Product::with('activeVariants')
             ->where('is_active', true)
-            ->find($variantId);
+            ->where(fn ($query) => $query->whereNull('outlet_id')->orWhere('outlet_id', $this->outletId))
+            ->findOrFail($productId);
+        $variant = $product->activeVariants->firstWhere('id', (int) $variantId) ?? $product->activeVariants->first();
 
-        if (! $variant) {
-            $this->cart[$key]['product_variant_id'] = null;
-            $this->cart[$key]['variant_name'] = null;
-            $this->cart[$key]['duration_hours'] = null;
-            $this->cart[$key]['price'] = 0;
-        } else {
-            $this->cart[$key]['product_variant_id'] = $variant->id;
-            $this->cart[$key]['variant_name'] = $variant->name;
-            $this->cart[$key]['duration_hours'] = $variant->duration_hours;
-            $this->cart[$key]['price'] = $variant->price;
-        }
+        $this->cart[$key] = $this->makeCartItem($product, $variant?->id, (float) $this->cart[$key]['quantity']);
 
         $this->paymentAmount = min((int) $this->paymentAmount, $this->total);
         $this->resetValidation('cart');
@@ -171,6 +165,18 @@ class PosPage extends Component
         return $this->customerId ? Customer::find($this->customerId) : null;
     }
 
+    #[Computed]
+    public function completedOrder(): ?Order
+    {
+        if (! $this->completedOrderId) {
+            return null;
+        }
+
+        return Order::with(['outlet', 'user', 'items'])
+            ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
+            ->find($this->completedOrderId);
+    }
+
     public function selectCustomer(int $id): void
     {
         $this->synchronizeEmployeeOutlet();
@@ -223,10 +229,11 @@ class PosPage extends Component
 
                 return $order;
             });
-            $url = route('transactions.receipt', ['order' => $order, 'autoprint' => $print ? 1 : 0]);
+            $url = route('transactions.receipt', $order);
             $receiptText = resolve(BluetoothReceipt::class)->build($order);
             session()->forget($this->cartSessionKey());
             $this->reset(['cart', 'customerId', 'customerSearch', 'discountValue', 'paymentAmount', 'notes']);
+            $this->completedOrderId = $order->id;
             $this->discountType = 'nominal';
             $this->paymentMethod = 'cash';
             $this->dispatch('notify', 'Transaksi '.$order->number.' berhasil disimpan.');
@@ -237,6 +244,24 @@ class PosPage extends Component
         } finally {
             $this->saving = false;
         }
+    }
+
+    #[On('receipt-print-finished')]
+    public function closeCompletedOrder(): void
+    {
+        $this->completedOrderId = null;
+    }
+
+    public function printCompletedOrder(): void
+    {
+        $order = $this->completedOrder;
+        abort_unless($order, 404);
+
+        $this->dispatch(
+            'print-receipt',
+            text: resolve(BluetoothReceipt::class)->build($order),
+            fallbackUrl: route('transactions.receipt', $order),
+        );
     }
 
     private function synchronizeEmployeeOutlet(): void
@@ -356,9 +381,7 @@ class PosPage extends Component
             ]);
         }
 
-        $selectedVariant = $variants->count() === 1
-            ? $variants->first()
-            : $variants->firstWhere('id', $selectedVariantId);
+        $selectedVariant = $variants->firstWhere('id', $selectedVariantId) ?? $variants->first();
 
         return [
             'product_id' => $product->id,

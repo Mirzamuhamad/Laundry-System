@@ -7,6 +7,7 @@ use App\Livewire\ManagementPage;
 use App\Livewire\PosPage;
 use App\Livewire\ReportsPage;
 use App\Livewire\TransactionsPage;
+use App\Livewire\UserAccountsPage;
 use App\Models\Attendance;
 use App\Models\Category;
 use App\Models\Customer;
@@ -117,8 +118,10 @@ class LaundryFlowTest extends TestCase
                 return str_contains($parameters['text'], '[QR]http://localhost')
                     && str_contains($parameters['text'], '/transactions/')
                     && str_contains($parameters['text'], '/receipt')
-                    && str_contains($parameters['fallbackUrl'], 'autoprint=1');
-            });
+                    && ! str_contains($parameters['fallbackUrl'], 'autoprint');
+            })
+            ->assertSee('TRANSAKSI BERHASIL')
+            ->assertSee($customer->name);
         $this->assertDatabaseHas('orders', ['customer_id' => $customer->id, 'total' => 24000, 'paid_amount' => 24000, 'payment_status' => 'paid']);
         $this->assertDatabaseHas('order_items', ['product_name' => 'Cuci Lipat', 'unit_price' => 8000, 'quantity' => 3]);
     }
@@ -143,13 +146,21 @@ class LaundryFlowTest extends TestCase
     {
         ['cashier' => $cashier, 'product' => $product, 'customer' => $customer] = $this->setupBusiness();
 
-        Livewire::actingAs($cashier)->test(PosPage::class)
+        $component = Livewire::actingAs($cashier)->test(PosPage::class)
             ->call('addProduct', $product->id)
             ->set('customerId', $customer->id)
             ->set('paymentAmount', 24000)
             ->call('saveOrder', false)
             ->assertHasNoErrors()
             ->assertSet('cart', []);
+
+        $order = Order::latest('id')->firstOrFail();
+        $component
+            ->assertSet('completedOrderId', $order->id)
+            ->call('printCompletedOrder')
+            ->assertDispatched('print-receipt', fn (string $event, array $parameters): bool => $parameters['fallbackUrl'] === route('transactions.receipt', $order))
+            ->dispatch('receipt-print-finished')
+            ->assertSet('completedOrderId', null);
 
         Livewire::actingAs($cashier)->test(PosPage::class)
             ->assertSet('cart', []);
@@ -215,7 +226,7 @@ class LaundryFlowTest extends TestCase
             ->call('printOrder', $order->id)
             ->assertDispatched('print-receipt', function (string $event, array $parameters) use ($order): bool {
                 return str_contains($parameters['text'], '[QR]'.route('transactions.receipt', $order))
-                    && str_contains($parameters['fallbackUrl'], 'autoprint=1');
+                    && $parameters['fallbackUrl'] === route('transactions.receipt', $order);
             });
     }
 
@@ -410,6 +421,97 @@ class LaundryFlowTest extends TestCase
         ]);
     }
 
+    public function test_owner_can_open_the_user_login_menu_and_create_a_cashier_account(): void
+    {
+        ['owner' => $owner, 'outlet' => $outlet] = $this->setupBusiness();
+
+        $this->actingAs($owner)->get('/user-login')
+            ->assertSee('User login')
+            ->assertSee('Tambah user login')
+            ->assertSee('Daftar user login');
+
+        Livewire::actingAs($owner)->test(UserAccountsPage::class)
+            ->set('accountName', 'Kasir Baru')
+            ->set('accountEmail', 'kasir.baru@test.local')
+            ->set('accountPhone', '08122223333')
+            ->set('accountPassword', 'password-baru')
+            ->set('accountRole', 'cashier')
+            ->set('accountOutletId', $outlet->id)
+            ->call('saveAccount')
+            ->assertHasNoErrors()
+            ->assertDispatched('notify');
+
+        $account = User::where('email', 'kasir.baru@test.local')->firstOrFail();
+        $this->assertSame('cashier', $account->role);
+        $this->assertSame($outlet->id, $account->outlet_id);
+        $this->assertTrue(Hash::check('password-baru', $account->password));
+        $this->assertDatabaseHas('employee_schedules', [
+            'user_id' => $account->id,
+            'start_time' => '08:00',
+            'end_time' => '17:00',
+        ]);
+    }
+
+    public function test_cashier_account_requires_an_active_outlet(): void
+    {
+        ['owner' => $owner] = $this->setupBusiness();
+
+        Livewire::actingAs($owner)->test(UserAccountsPage::class)
+            ->set('accountName', 'Kasir Tanpa Outlet')
+            ->set('accountEmail', 'tanpa.outlet@test.local')
+            ->set('accountPassword', 'password-baru')
+            ->set('accountRole', 'cashier')
+            ->set('accountOutletId', null)
+            ->call('saveAccount')
+            ->assertHasErrors(['accountOutletId']);
+
+        $this->assertDatabaseMissing('users', ['email' => 'tanpa.outlet@test.local']);
+    }
+
+    public function test_owner_can_edit_login_account_without_replacing_its_password(): void
+    {
+        ['owner' => $owner, 'cashier' => $cashier] = $this->setupBusiness();
+        $oldPassword = $cashier->password;
+
+        Livewire::actingAs($owner)->test(UserAccountsPage::class)
+            ->call('editAccount', $cashier->id)
+            ->assertSet('editingAccountId', $cashier->id)
+            ->set('accountName', 'Supervisor')
+            ->set('accountEmail', 'supervisor@test.local')
+            ->set('accountPassword', '')
+            ->set('accountRole', 'owner')
+            ->set('accountIsActive', true)
+            ->call('saveAccount')
+            ->assertHasNoErrors()
+            ->assertSet('editingAccountId', null)
+            ->assertDispatched('notify');
+
+        $cashier->refresh();
+        $this->assertSame('Supervisor', $cashier->name);
+        $this->assertSame('supervisor@test.local', $cashier->email);
+        $this->assertSame('owner', $cashier->role);
+        $this->assertNull($cashier->outlet_id);
+        $this->assertSame($oldPassword, $cashier->password);
+    }
+
+    public function test_owner_can_disable_another_login_account(): void
+    {
+        ['owner' => $owner, 'cashier' => $cashier] = $this->setupBusiness();
+
+        Livewire::actingAs($owner)->test(UserAccountsPage::class)
+            ->call('toggleAccount', $cashier->id)
+            ->assertDispatched('notify');
+
+        $this->assertFalse($cashier->fresh()->is_active);
+    }
+
+    public function test_cashier_cannot_open_user_login_management(): void
+    {
+        ['cashier' => $cashier] = $this->setupBusiness();
+
+        $this->actingAs($cashier)->get('/user-login')->assertForbidden();
+    }
+
     public function test_owner_can_edit_an_employee_and_move_them_to_another_outlet(): void
     {
         ['owner' => $owner, 'cashier' => $cashier] = $this->setupBusiness();
@@ -509,11 +611,14 @@ class LaundryFlowTest extends TestCase
     public function test_attendance_history_includes_the_end_date_and_marks_late_employees(): void
     {
         ['owner' => $owner, 'cashier' => $cashier, 'outlet' => $outlet] = $this->setupBusiness();
-        Attendance::create([
+        $attendance = Attendance::create([
             'user_id' => $cashier->id,
             'outlet_id' => $outlet->id,
             'attendance_date' => today()->toDateString(),
             'check_in_at' => today()->setTime(9, 5),
+            'check_in_photo' => 'attendance/test/in.jpg',
+            'check_out_at' => today()->setTime(17, 0),
+            'check_out_photo' => 'attendance/test/out.jpg',
             'status' => 'late',
         ]);
 
@@ -523,6 +628,10 @@ class LaundryFlowTest extends TestCase
             ->set('to', today()->toDateString())
             ->assertSee('Kasir')
             ->assertSee('Terlambat')
+            ->assertSee('Foto masuk Kasir')
+            ->assertSee('Foto keluar Kasir')
+            ->assertSee(route('attendance.photo', [$attendance, 'in']), false)
+            ->assertSee(route('attendance.photo', [$attendance, 'out']), false)
             ->assertSeeHtml('class="is-late"');
     }
 
@@ -624,6 +733,9 @@ class LaundryFlowTest extends TestCase
 
         Livewire::actingAs($owner)->test(TransactionsPage::class)
             ->assertViewHas('orders', fn ($paginator): bool => $paginator->total() === 11 && $paginator->count() === 10)
+            ->assertSee('Filter & pencarian', false)
+            ->assertSee('Total transaksi')
+            ->assertSee('Cetak struk')
             ->call('setPage', 2)
             ->assertSet('paginators.page', 2)
             ->set('perPage', 25)
@@ -631,6 +743,72 @@ class LaundryFlowTest extends TestCase
             ->assertViewHas('orders', fn ($paginator): bool => $paginator->count() === 11)
             ->set('perPage', 999)
             ->assertSet('perPage', 10);
+    }
+
+    public function test_transaction_list_can_show_unfinished_orders_due_today(): void
+    {
+        ['owner' => $owner, 'cashier' => $cashier, 'outlet' => $outlet, 'customer' => $customer] = $this->setupBusiness();
+        foreach ([
+            ['number' => 'DUE-TODAY', 'due_at' => today()->setTime(17, 0), 'status' => 'processing'],
+            ['number' => 'DUE-TOMORROW', 'due_at' => today()->addDay()->setTime(17, 0), 'status' => 'processing'],
+            ['number' => 'READY-TODAY', 'due_at' => today()->setTime(12, 0), 'status' => 'ready'],
+        ] as $orderData) {
+            Order::create([
+                ...$orderData,
+                'outlet_id' => $outlet->id,
+                'customer_id' => $customer->id,
+                'user_id' => $cashier->id,
+                'customer_name' => $customer->name,
+                'customer_phone' => $customer->phone,
+                'subtotal' => 10000,
+                'total' => 10000,
+                'paid_amount' => 0,
+            ]);
+        }
+
+        Livewire::actingAs($owner)->test(TransactionsPage::class)
+            ->assertViewHas('dueTodayCount', 1)
+            ->set('dueTodayOnly', true)
+            ->assertSet('paginators.page', 1)
+            ->assertViewHas('orders', fn ($orders): bool => $orders->total() === 1)
+            ->assertSee('DUE-TODAY')
+            ->assertDontSee('DUE-TOMORROW')
+            ->assertDontSee('READY-TODAY');
+    }
+
+    public function test_transaction_mobile_card_shows_expandable_service_details(): void
+    {
+        ['owner' => $owner, 'cashier' => $cashier, 'outlet' => $outlet, 'product' => $product, 'customer' => $customer] = $this->setupBusiness();
+        $order = Order::create([
+            'number' => 'MOBILE-SERVICE',
+            'outlet_id' => $outlet->id,
+            'customer_id' => $customer->id,
+            'user_id' => $cashier->id,
+            'customer_name' => $customer->name,
+            'customer_phone' => $customer->phone,
+            'subtotal' => 16000,
+            'total' => 16000,
+            'paid_amount' => 0,
+        ]);
+        $order->items()->create([
+            'product_id' => $product->id,
+            'product_name' => 'Cuci Kering Lipat',
+            'variant_name' => 'Reguler',
+            'duration_hours' => 72,
+            'unit' => 'kg',
+            'quantity' => 2,
+            'unit_price' => 8000,
+            'subtotal' => 16000,
+        ]);
+
+        Livewire::actingAs($owner)->test(TransactionsPage::class)
+            ->assertViewHas('orders', fn ($orders): bool => $orders->first()->relationLoaded('items'))
+            ->assertSee('1 layanan · ketuk untuk melihat rincian')
+            ->assertSee('1 jenis layanan')
+            ->assertSee('Cuci Kering Lipat')
+            ->assertSee('Reguler')
+            ->assertSee('Kirim struk')
+            ->assertSee('Rp16.000');
     }
 
     public function test_logout_uses_the_styled_confirmation_dialog(): void
