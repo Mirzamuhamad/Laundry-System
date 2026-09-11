@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0f766e">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <title>{{ $title ?? 'Laundry Pos' }}</title>
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+    @livewireStyles
+    @fluxAppearance
+</head>
+<body>
+    <div class="app-shell" x-data="sidebarShell()" :class="collapsed ? 'sidebar-collapsed' : ''">
+        <aside class="sidebar">
+            <button type="button" class="brand" @click="toggle()" :title="collapsed ? 'Buka sidebar' : 'Tutup sidebar'" :aria-label="collapsed ? 'Buka sidebar' : 'Tutup sidebar'">
+                <span class="brand-mark">LP</span>
+                <span class="brand-copy"><strong>Laundry Pos</strong><small>{{ auth()->user()->outlet?->name ?? 'Semua outlet' }}</small></span>
+            </button>
+
+            <nav class="nav-list">
+                <a href="{{ route('dashboard') }}" class="nav-item {{ request()->routeIs('dashboard') ? 'active' : '' }}" title="Ringkasan" wire:navigate><span>⌂</span><span class="nav-label">Ringkasan</span></a>
+                <a href="{{ route('pos') }}" class="nav-item {{ request()->routeIs('pos') ? 'active' : '' }}" title="POS" wire:navigate><span>＋</span><span class="nav-label">POS</span></a>
+                <a href="{{ route('transactions') }}" class="nav-item {{ request()->routeIs('transactions') ? 'active' : '' }}" title="Transaksi" wire:navigate><span>▤</span><span class="nav-label">Transaksi</span></a>
+                <a href="{{ route('attendance') }}" class="nav-item {{ request()->routeIs('attendance') ? 'active' : '' }}" title="Absensi" wire:navigate><span>◉</span><span class="nav-label">Absensi</span></a>
+                @if(auth()->user()->isOwner())
+                    <div class="nav-section">Manajemen</div>
+                    <a href="{{ route('products') }}" class="nav-item {{ request()->routeIs('products') ? 'active' : '' }}" title="Produk" wire:navigate><span>◇</span><span class="nav-label">Produk</span></a>
+                    <a href="{{ route('expenses') }}" class="nav-item {{ request()->routeIs('expenses') ? 'active' : '' }}" title="Expense" wire:navigate><span>&#8599;&#65038;</span><span class="nav-label">Expense</span></a>
+                    <a href="{{ route('reports') }}" class="nav-item {{ request()->routeIs('reports') ? 'active' : '' }}" title="Laporan" wire:navigate><span>▥</span><span class="nav-label">Laporan</span></a>
+                    <a href="{{ route('management') }}" class="nav-item {{ request()->routeIs('management') ? 'active' : '' }}" title="Pengaturan" wire:navigate><span>⚙</span><span class="nav-label">Pengaturan</span></a>
+                @endif
+            </nav>
+
+            <div class="user-card">
+                <div class="avatar">{{ strtoupper(substr(auth()->user()->name, 0, 1)) }}</div>
+                <div class="user-copy"><strong>{{ auth()->user()->name }}</strong><small>{{ auth()->user()->isOwner() ? 'Owner' : 'Kasir' }}</small></div>
+                <form class="logout-form" method="POST" action="{{ route('logout') }}" x-on:submit.prevent="askLogout($event)">@csrf<button type="submit" title="Keluar" aria-label="Keluar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg></button></form>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            {{ $slot }}
+        </main>
+
+        <nav class="bottom-nav mobile-primary-nav five-item-nav" x-data="{ moreOpen: false }" x-on:keydown.escape.window="moreOpen = false">
+            <a data-mobile-nav-item href="{{ route('dashboard') }}" class="{{ request()->routeIs('dashboard') ? 'active' : '' }}" wire:navigate><span>⌂</span><small>Ringkas</small></a>
+            <a data-mobile-nav-item href="{{ route('transactions') }}" class="{{ request()->routeIs('transactions') ? 'active' : '' }}" wire:navigate><span>▤</span><small>Order</small></a>
+            <a data-mobile-nav-item href="{{ route('pos') }}" class="bottom-pos {{ request()->routeIs('pos') ? 'active' : '' }}" wire:navigate><span>＋</span><small>POS</small></a>
+            @if(auth()->user()->isOwner())
+                <a data-mobile-nav-item href="{{ route('reports') }}" class="{{ request()->routeIs('reports') ? 'active' : '' }}" wire:navigate><span>▥</span><small>Laporan</small></a>
+            @else
+                <a data-mobile-nav-item href="{{ route('attendance') }}" class="{{ request()->routeIs('attendance') ? 'active' : '' }}" wire:navigate><span>◉</span><small>Absen</small></a>
+            @endif
+            <div data-mobile-nav-item class="bottom-more" x-on:click.outside="moreOpen = false">
+                <button type="button" class="bottom-more-toggle {{ request()->routeIs('attendance') && auth()->user()->isOwner() ? 'active' : '' }}" x-on:click="moreOpen = ! moreOpen" :aria-expanded="moreOpen" aria-haspopup="true"><span>•••</span><small>More</small></button>
+                <div class="bottom-more-menu" x-show="moreOpen" x-transition.origin.bottom.right x-cloak>
+                    @if(auth()->user()->isOwner())
+                        <a href="{{ route('attendance') }}" class="{{ request()->routeIs('attendance') ? 'active' : '' }}" x-on:click="moreOpen = false" wire:navigate><span>◉</span><span><strong>Absensi</strong><small>Catat kehadiran</small></span></a>
+                    @endif
+                    <form method="POST" action="{{ route('logout') }}" x-on:submit.prevent="moreOpen = false; askLogout($event)">@csrf<button type="submit"><span class="bottom-logout-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg></span><span><strong>Keluar</strong><small>Akhiri sesi</small></span></button></form>
+                </div>
+            </div>
+        </nav>
+
+        <div class="modal-backdrop logout-backdrop" x-show="logoutOpen" x-cloak x-transition.opacity x-on:click.self="cancelLogout()" x-on:keydown.escape.window="cancelLogout()">
+            <section class="logout-dialog" role="dialog" aria-modal="true" aria-labelledby="logout-title">
+                <div class="logout-dialog-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg></div>
+                <p class="eyebrow">KONFIRMASI KELUAR</p>
+                <h2 id="logout-title">Yakin ingin keluar?</h2>
+                <p>Sesi Anda di Laundry Pos akan diakhiri. Pastikan transaksi yang sedang dikerjakan sudah disimpan.</p>
+                <div class="logout-dialog-actions"><button type="button" class="btn btn-ghost" x-on:click="cancelLogout()">Tetap di sini</button><button type="button" class="btn logout-confirm-button" x-on:click="confirmLogout()">Ya, keluar</button></div>
+            </section>
+        </div>
+    </div>
+    <div class="toast" x-data="{ show: false, message: '' }" x-on:notify.window="message=$event.detail; show=true; setTimeout(()=>show=false,3000)" x-show="show" x-transition x-cloak x-text="message"></div>
+    @livewireScripts
+    @fluxScripts
+</body>
+</html>
