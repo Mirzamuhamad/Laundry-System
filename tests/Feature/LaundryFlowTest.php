@@ -18,6 +18,7 @@ use App\Models\Outlet;
 use App\Models\Payment;
 use App\Models\Product;
 use App\Models\User;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
@@ -61,9 +62,20 @@ class LaundryFlowTest extends TestCase
 
         $ownerResponse
             ->assertSee('bottom-more-menu', false)
+            ->assertSeeHtml('class="bottom-pos-icon"')
             ->assertSee('Absensi')
             ->assertSee('Laporan')
+            ->assertSeeHtml('<strong>Produk</strong>')
+            ->assertSeeHtml('<strong>Expense</strong>')
+            ->assertSeeHtml('<strong>User Login</strong>')
+            ->assertSeeHtml('<strong>Pengaturan</strong>')
             ->assertSee('Akhiri sesi');
+        $cashierResponse
+            ->assertSeeHtml('class="bottom-pos-icon"')
+            ->assertDontSeeHtml('<strong>Produk</strong>')
+            ->assertDontSeeHtml('<strong>Expense</strong>')
+            ->assertDontSeeHtml('<strong>User Login</strong>')
+            ->assertDontSeeHtml('<strong>Pengaturan</strong>');
         $this->assertSame(5, substr_count($ownerResponse->getContent(), 'data-mobile-nav-item'));
         $this->assertSame(5, substr_count($cashierResponse->getContent(), 'data-mobile-nav-item'));
     }
@@ -79,6 +91,25 @@ class LaundryFlowTest extends TestCase
             ->assertSee($customer->name);
     }
 
+    public function test_saving_without_a_customer_opens_the_customer_picker_and_stops_the_order(): void
+    {
+        ['cashier' => $cashier, 'customer' => $customer, 'product' => $product] = $this->setupBusiness();
+
+        Livewire::actingAs($cashier)->test(PosPage::class)
+            ->call('addProduct', $product->id)
+            ->call('saveOrder', false)
+            ->assertSet('showCustomer', true)
+            ->assertSet('showNewCustomer', false)
+            ->assertSet('saving', false)
+            ->assertHasErrors(['customerId'])
+            ->assertSee('Pilih pelanggan terlebih dahulu')
+            ->assertSee('Pilih pelanggan terlebih dahulu sebelum menyimpan transaksi.')
+            ->assertSee($customer->name)
+            ->assertDispatched('notify');
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
     public function test_pos_header_renders_labeled_printer_and_outlet_controls(): void
     {
         ['owner' => $owner] = $this->setupBusiness();
@@ -87,6 +118,26 @@ class LaundryFlowTest extends TestCase
             ->assertSeeHtml('class="printer-control"')
             ->assertSee('Printer')
             ->assertSee('Outlet');
+    }
+
+    public function test_pos_renders_rupiah_formatters_for_nominal_discount_and_payment_inputs(): void
+    {
+        ['cashier' => $cashier, 'product' => $product] = $this->setupBusiness();
+
+        $component = Livewire::actingAs($cashier)->test(PosPage::class)
+            ->call('addProduct', $product->id);
+
+        $html = $component->html();
+        $this->assertSame(2, substr_count($html, 'x-data="moneyInput('));
+        $this->assertStringContainsString("'discountValue'", $html);
+        $this->assertStringContainsString("'paymentAmount'", $html);
+        $this->assertSame(2, substr_count($html, 'inputmode="numeric"'));
+
+        $percentHtml = $component
+            ->set('discountType', 'percent')
+            ->html();
+        $this->assertSame(1, substr_count($percentHtml, 'x-data="moneyInput('));
+        $this->assertStringContainsString('aria-label="Diskon persen"', $percentHtml);
     }
 
     public function test_product_card_displays_its_quantity_after_being_added_to_the_cart(): void
@@ -745,13 +796,16 @@ class LaundryFlowTest extends TestCase
             ->assertSet('perPage', 10);
     }
 
-    public function test_transaction_list_can_show_unfinished_orders_due_today(): void
+    public function test_transaction_list_can_filter_overdue_and_upcoming_completion_dates(): void
     {
+        $this->travelTo('2026-09-12 12:00:00');
         ['owner' => $owner, 'cashier' => $cashier, 'outlet' => $outlet, 'customer' => $customer] = $this->setupBusiness();
         foreach ([
+            ['number' => 'OVERDUE-YESTERDAY', 'due_at' => today()->subDay()->setTime(17, 0), 'status' => 'processing'],
+            ['number' => 'OVERDUE-TODAY', 'due_at' => today()->setTime(10, 0), 'status' => 'received'],
             ['number' => 'DUE-TODAY', 'due_at' => today()->setTime(17, 0), 'status' => 'processing'],
             ['number' => 'DUE-TOMORROW', 'due_at' => today()->addDay()->setTime(17, 0), 'status' => 'processing'],
-            ['number' => 'READY-TODAY', 'due_at' => today()->setTime(12, 0), 'status' => 'ready'],
+            ['number' => 'READY-TOMORROW', 'due_at' => today()->addDay()->setTime(12, 0), 'status' => 'ready'],
         ] as $orderData) {
             Order::create([
                 ...$orderData,
@@ -767,16 +821,32 @@ class LaundryFlowTest extends TestCase
         }
 
         Livewire::actingAs($owner)->test(TransactionsPage::class)
-            ->assertViewHas('dueTodayCount', 1)
-            ->set('dueTodayOnly', true)
+            ->assertViewHas('overdueCount', 2)
+            ->assertViewHas('dueDateOptions', function ($dates): bool {
+                $today = $dates->firstWhere('value', '2026-09-12');
+                $tomorrow = $dates->firstWhere('value', '2026-09-13');
+
+                return $today['count'] === 2 && $tomorrow['count'] === 1;
+            })
+            ->assertSee('Jadwal selesai')
+            ->assertSee('Terlambat')
+            ->call('selectDueFilter', 'overdue')
             ->assertSet('paginators.page', 1)
-            ->assertViewHas('orders', fn ($orders): bool => $orders->total() === 1)
-            ->assertSee('DUE-TODAY')
+            ->assertSet('dueFilter', 'overdue')
+            ->assertViewHas('orders', fn ($orders): bool => $orders->total() === 2)
+            ->assertSee('OVERDUE-YESTERDAY')
+            ->assertSee('OVERDUE-TODAY')
             ->assertDontSee('DUE-TOMORROW')
-            ->assertDontSee('READY-TODAY');
+            ->call('selectDueFilter', '2026-09-13')
+            ->assertSet('dueFilter', '2026-09-13')
+            ->assertViewHas('orders', fn ($orders): bool => $orders->total() === 1)
+            ->assertSee('DUE-TOMORROW')
+            ->assertDontSee('READY-TOMORROW')
+            ->call('selectDueFilter', '2026-09-13')
+            ->assertSet('dueFilter', '');
     }
 
-    public function test_transaction_mobile_card_shows_expandable_service_details(): void
+    public function test_transaction_details_use_an_action_on_desktop_and_expand_inside_mobile_cards(): void
     {
         ['owner' => $owner, 'cashier' => $cashier, 'outlet' => $outlet, 'product' => $product, 'customer' => $customer] = $this->setupBusiness();
         $order = Order::create([
@@ -803,12 +873,116 @@ class LaundryFlowTest extends TestCase
 
         Livewire::actingAs($owner)->test(TransactionsPage::class)
             ->assertViewHas('orders', fn ($orders): bool => $orders->first()->relationLoaded('items'))
+            ->assertSeeHtml('title="Lihat detail"')
+            ->assertDontSeeHtml('<th>Layanan</th>')
+            ->assertSeeHtml('x-data="{ servicesOpen: false }"')
+            ->assertSeeHtml('class="transaction-card-services"')
             ->assertSee('1 layanan · ketuk untuk melihat rincian')
             ->assertSee('1 jenis layanan')
+            ->assertSee('Cuci Kering Lipat')
+            ->call('openDetail', $order->id)
+            ->assertSet('detailOrderId', $order->id)
+            ->assertSee('DETAIL TRANSAKSI')
             ->assertSee('Cuci Kering Lipat')
             ->assertSee('Reguler')
             ->assertSee('Kirim struk')
             ->assertSee('Rp16.000');
+    }
+
+    public function test_mobile_transaction_page_replaces_its_header_with_search_and_receipt_qr_scanner(): void
+    {
+        ['owner' => $owner] = $this->setupBusiness();
+
+        Livewire::actingAs($owner)->test(TransactionsPage::class)
+            ->assertSeeHtml('class="page-header transaction-page-header"')
+            ->assertSeeHtml('class="transaction-mobile-toolbar"')
+            ->assertSeeHtml('x-data="transactionList($wire)"')
+            ->assertSee('Cari nomor, pelanggan, WhatsApp...')
+            ->assertSee('Scan QR')
+            ->assertSee('Arahkan ke QR struk');
+    }
+
+    public function test_receipt_qr_scan_finds_the_transaction_and_opens_its_detail(): void
+    {
+        ['owner' => $owner, 'cashier' => $cashier, 'outlet' => $outlet, 'customer' => $customer] = $this->setupBusiness();
+        $order = Order::create([
+            'number' => 'QR-FOUND',
+            'outlet_id' => $outlet->id,
+            'customer_id' => $customer->id,
+            'user_id' => $cashier->id,
+            'customer_name' => $customer->name,
+            'customer_phone' => $customer->phone,
+            'subtotal' => 10000,
+            'total' => 10000,
+            'paid_amount' => 0,
+        ]);
+
+        Livewire::actingAs($owner)->test(TransactionsPage::class)
+            ->set('status', 'completed')
+            ->set('paymentStatus', 'paid')
+            ->set('dateFrom', '2026-01-01')
+            ->set('dateTo', '2026-01-31')
+            ->set('dueFilter', 'overdue')
+            ->call('scanReceiptQr', route('transactions.receipt', $order))
+            ->assertSet('search', 'QR-FOUND')
+            ->assertSet('status', '')
+            ->assertSet('paymentStatus', '')
+            ->assertSet('dateFrom', '')
+            ->assertSet('dateTo', '')
+            ->assertSet('dueFilter', '')
+            ->assertSet('outletId', $outlet->id)
+            ->assertSet('detailOrderId', $order->id)
+            ->assertSee('DETAIL TRANSAKSI')
+            ->assertDispatched('notify');
+    }
+
+    public function test_receipt_qr_scan_rejects_invalid_and_other_outlet_transactions(): void
+    {
+        ['cashier' => $cashier, 'customer' => $customer] = $this->setupBusiness();
+        $otherOutlet = Outlet::create(['name' => 'Outlet QR Lain', 'code' => 'QRO']);
+        $order = Order::create([
+            'number' => 'QR-OTHER',
+            'outlet_id' => $otherOutlet->id,
+            'customer_id' => $customer->id,
+            'user_id' => $cashier->id,
+            'customer_name' => $customer->name,
+            'customer_phone' => $customer->phone,
+            'subtotal' => 10000,
+            'total' => 10000,
+            'paid_amount' => 0,
+        ]);
+
+        $component = Livewire::actingAs($cashier)->test(TransactionsPage::class)
+            ->call('scanReceiptQr', 'https://example.com/not-a-receipt')
+            ->assertSet('detailOrderId', null)
+            ->assertDispatched('notify');
+
+        $component
+            ->call('scanReceiptQr', route('transactions.receipt', $order))
+            ->assertSet('detailOrderId', null)
+            ->assertDispatched('notify');
+    }
+
+    public function test_cashier_cannot_open_transaction_detail_from_another_outlet(): void
+    {
+        ['cashier' => $cashier, 'customer' => $customer] = $this->setupBusiness();
+        $otherOutlet = Outlet::create(['name' => 'Outlet Lain', 'code' => 'OTH']);
+        $order = Order::create([
+            'number' => 'OTHER-OUTLET',
+            'outlet_id' => $otherOutlet->id,
+            'customer_id' => $customer->id,
+            'user_id' => $cashier->id,
+            'customer_name' => $customer->name,
+            'customer_phone' => $customer->phone,
+            'subtotal' => 10000,
+            'total' => 10000,
+            'paid_amount' => 0,
+        ]);
+
+        $this->expectException(ModelNotFoundException::class);
+
+        Livewire::actingAs($cashier)->test(TransactionsPage::class)
+            ->call('openDetail', $order->id);
     }
 
     public function test_logout_uses_the_styled_confirmation_dialog(): void

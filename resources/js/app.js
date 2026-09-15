@@ -27,6 +27,43 @@ window.clockWidget = () => ({
     },
 });
 
+window.moneyInput = ($wire, property, initialValue = 0, commitOnInput = false) => ({
+    display: '',
+    numericValue: 0,
+    commitTimer: null,
+    init() {
+        this.sync(initialValue);
+    },
+    normalize(value) {
+        const digits = String(value ?? '').replace(/\D/g, '');
+
+        return digits === '' ? 0 : Number.parseInt(digits, 10);
+    },
+    format(value) {
+        return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
+    },
+    update(event) {
+        const digits = event.target.value.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+        this.numericValue = digits === '' ? 0 : Number.parseInt(digits, 10);
+        this.display = digits === '' ? '' : this.format(this.numericValue);
+        event.target.value = this.display;
+        $wire.$set(property, this.numericValue, false);
+
+        if (commitOnInput) {
+            window.clearTimeout(this.commitTimer);
+            this.commitTimer = window.setTimeout(() => $wire.$commit(), 300);
+        }
+    },
+    sync(value) {
+        const numericValue = this.normalize(value);
+
+        if (numericValue === this.numericValue && this.display !== '') return;
+
+        this.numericValue = numericValue;
+        this.display = this.format(numericValue);
+    },
+});
+
 window.attendanceCamera = ($wire) => ({
     cameraOpen: false, mode: 'in', stream: null, photoData: '', error: '', loading: false,
     async openCamera(mode) {
@@ -56,6 +93,82 @@ window.attendanceCamera = ($wire) => ({
     },
     stopStream() { if (this.stream) this.stream.getTracks().forEach(track => track.stop()); this.stream = null; },
     closeCamera() { this.stopStream(); this.cameraOpen = false; this.photoData = ''; this.error = ''; },
+});
+
+window.transactionList = ($wire) => ({
+    filtersOpen: false,
+    scannerOpen: false,
+    scannerStream: null,
+    scannerTimer: null,
+    barcodeDetector: null,
+    scannerError: '',
+    scannerBusy: false,
+    async openScanner() {
+        this.scannerOpen = true;
+        this.scannerError = '';
+        await this.$nextTick();
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+            this.scannerError = 'Kamera memerlukan izin browser dan koneksi HTTPS.';
+            return;
+        }
+
+        if (!window.BarcodeDetector) {
+            this.scannerError = 'Pemindai QR belum didukung browser ini. Gunakan Chrome atau Edge versi terbaru.';
+            return;
+        }
+
+        try {
+            const supportedFormats = await window.BarcodeDetector.getSupportedFormats();
+            if (!supportedFormats.includes('qr_code')) throw new Error('QR tidak didukung');
+
+            this.barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+            this.scannerStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: false,
+            });
+            this.$refs.qrVideo.srcObject = this.scannerStream;
+            await this.$refs.qrVideo.play();
+            this.scanNextFrame();
+        } catch (error) {
+            this.stopScanner();
+            this.scannerError = error?.name === 'NotAllowedError'
+                ? 'Izin kamera ditolak. Aktifkan izin kamera lalu coba lagi.'
+                : 'Kamera tidak dapat digunakan untuk memindai QR.';
+        }
+    },
+    async scanNextFrame() {
+        if (!this.scannerOpen || !this.barcodeDetector || this.scannerBusy) return;
+
+        this.scannerBusy = true;
+        try {
+            const codes = await this.barcodeDetector.detect(this.$refs.qrVideo);
+            const qrValue = codes.find(code => code.rawValue)?.rawValue;
+
+            if (qrValue) {
+                this.stopScanner();
+                this.scannerOpen = false;
+                await $wire.scanReceiptQr(qrValue);
+                return;
+            }
+        } catch (_) { /* frame belum siap atau QR belum terbaca */ }
+        finally { this.scannerBusy = false; }
+
+        if (this.scannerOpen) this.scannerTimer = window.setTimeout(() => this.scanNextFrame(), 220);
+    },
+    stopScanner() {
+        if (this.scannerTimer) window.clearTimeout(this.scannerTimer);
+        this.scannerTimer = null;
+        if (this.scannerStream) this.scannerStream.getTracks().forEach(track => track.stop());
+        this.scannerStream = null;
+        this.barcodeDetector = null;
+        this.scannerBusy = false;
+    },
+    closeScanner() {
+        this.stopScanner();
+        this.scannerOpen = false;
+        this.scannerError = '';
+    },
 });
 
 const bluetoothPrinter = {

@@ -1,0 +1,133 @@
+.customer-required-alert {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 11px;
+    align-items: center;
+    margin-bottom: 14px;
+    padding: 11px 13px;
+    border: 1px solid #fecaca;
+    border-radius: 12px;
+    background: #fff7f7;
+    color: #991b1b;
+}
+
+.customer-required-alert > span {
+    display: grid;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    border-radius: 10px;
+    background: #fee2e2;
+}
+
+.customer-required-alert svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.8;
+}
+
+.customer-required-alert div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.customer-required-alert strong,
+.customer-required-alert small {
+    display: block;
+}
+
+.customer-required-alert small {
+    line-height: 1.4;
+    color: #b91c1c;
+}
+
+@media (min-width: 901px) {
+    .pos-page {
+        height: calc(100dvh - 68px);
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .pos-page .pos-page-header {
+        flex: 0 0 auto;
+    }
+
+    .main-content .pos-layout {
+        min-height: 0;
+        flex: 1 1 auto;
+        grid-template-columns: minmax(0, 1fr) 420px;
+        align-items: stretch;
+        overflow: hidden;
+    }
+
+    .pos-layout .catalog-panel {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .catalog-panel .search-box,
+    .catalog-panel .category-pills {
+        flex: 0 0 auto;
+    }
+
+    .catalog-panel .product-grid {
+        min-height: 0;
+        align-content: start;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-right: 7px;
+        scrollbar-width: none;
+    }
+
+    .pos-layout .cart-panel {
+        position: relative;
+        top: auto;
+        height: 100%;
+        min-height: 0;
+        max-height: none;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-width: none;
+    }
+
+    .catalog-panel .product-grid::-webkit-scrollbar,
+    .pos-layout .cart-panel::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+    }
+
+    .cart-panel .cart-items {
+        min-height: 190px;
+        max-height: none;
+        flex: 0 0 auto;
+        overflow: visible;
+    }
+
+    .cart-panel .cart-items article {
+        padding: 14px 17px;
+    }
+
+    .cart-panel .cart-items .qty-row {
+        margin-top: 12px;
+    }
+
+    .cart-panel .cart-actions {
+        position: sticky;
+        bottom: 0;
+        z-index: 4;
+        padding-top: 10px;
+        background: white;
+        box-shadow: 0 -8px 18px rgba(18, 35, 33, 0.07);
+    }
+}

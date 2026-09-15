@@ -6,6 +6,8 @@ use App\Models\Order;
 use App\Models\Outlet;
 use App\Models\Payment;
 use App\Support\BluetoothReceipt;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Layout;
@@ -31,13 +33,15 @@ class TransactionsPage extends Component
 
     public ?int $selectedOrderId = null;
 
+    public ?int $detailOrderId = null;
+
     public $paymentAmount = '';
 
     public string $paymentMethod = 'cash';
 
     public int $perPage = 10;
 
-    public bool $dueTodayOnly = false;
+    public string $dueFilter = '';
 
     public function mount(): void
     {
@@ -48,7 +52,7 @@ class TransactionsPage extends Component
 
     public function updated($property): void
     {
-        if (in_array($property, ['search', 'status', 'paymentStatus', 'outletId', 'dateFrom', 'dateTo', 'dueTodayOnly'], true)) {
+        if (in_array($property, ['search', 'status', 'paymentStatus', 'outletId', 'dateFrom', 'dateTo', 'dueFilter'], true)) {
             $this->resetPage();
         }
 
@@ -78,6 +82,43 @@ class TransactionsPage extends Component
         $this->paymentAmount = $order->balance;
     }
 
+    public function openDetail(int $id): void
+    {
+        $this->detailOrderId = $this->findAllowed($id)->id;
+    }
+
+    public function scanReceiptQr(string $qrValue): void
+    {
+        $path = mb_strlen($qrValue) <= 2048 ? parse_url(trim($qrValue), PHP_URL_PATH) : false;
+
+        if (! is_string($path) || preg_match('#^/transactions/(\d+)/receipt/?$#', $path, $matches) !== 1) {
+            $this->dispatch('notify', 'QR tidak dikenali. Gunakan QR yang tercetak pada struk transaksi.');
+
+            return;
+        }
+
+        $order = Order::query()
+            ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
+            ->find((int) $matches[1]);
+
+        if (! $order) {
+            $this->dispatch('notify', 'Transaksi tidak ditemukan atau tidak dapat diakses.');
+
+            return;
+        }
+
+        $this->search = $order->number;
+        $this->status = '';
+        $this->paymentStatus = '';
+        $this->dateFrom = '';
+        $this->dateTo = '';
+        $this->dueFilter = '';
+        $this->outletId = $order->outlet_id;
+        $this->detailOrderId = $order->id;
+        $this->resetPage();
+        $this->dispatch('notify', 'Transaksi '.$order->number.' ditemukan.');
+    }
+
     public function printOrder(int $id): void
     {
         $order = $this->findAllowed($id);
@@ -87,6 +128,14 @@ class TransactionsPage extends Component
             text: resolve(BluetoothReceipt::class)->build($order),
             fallbackUrl: route('transactions.receipt', $order),
         );
+    }
+
+    public function selectDueFilter(string $filter): void
+    {
+        abort_unless($filter === 'overdue' || preg_match('/^\d{4}-\d{2}-\d{2}$/', $filter) === 1, 422);
+
+        $this->dueFilter = $this->dueFilter === $filter ? '' : $filter;
+        $this->resetPage();
     }
 
     public function addPayment(): void
@@ -104,12 +153,35 @@ class TransactionsPage extends Component
 
     public function render()
     {
-        $dueTodayCount = Order::query()
+        $today = CarbonImmutable::today();
+        $lastScheduleDate = $today->addDays(29);
+        $unfinishedDueQuery = Order::query()
             ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
             ->when($this->outletId, fn ($query) => $query->where('outlet_id', $this->outletId))
-            ->whereDate('due_at', today())
-            ->whereNotIn('status', ['ready', 'completed', 'cancelled'])
+            ->whereNotNull('due_at')
+            ->whereNotIn('status', ['ready', 'completed', 'cancelled']);
+
+        $overdueCount = (clone $unfinishedDueQuery)
+            ->where('due_at', '<', now())
             ->count();
+
+        $dueCounts = (clone $unfinishedDueQuery)
+            ->whereBetween('due_at', [$today->startOfDay(), $lastScheduleDate->endOfDay()])
+            ->selectRaw('DATE(due_at) as due_date, COUNT(*) as total')
+            ->groupByRaw('DATE(due_at)')
+            ->pluck('total', 'due_date');
+
+        $dueDateOptions = collect(range(0, 29))->map(function (int $dayOffset) use ($dueCounts, $today): array {
+            $date = $today->addDays($dayOffset);
+            $dateValue = $date->toDateString();
+
+            return [
+                'value' => $dateValue,
+                'day' => $dayOffset === 0 ? 'Hari ini' : ucfirst($date->translatedFormat('D')),
+                'date' => $date->translatedFormat('d M'),
+                'count' => (int) ($dueCounts[$dateValue] ?? 0),
+            ];
+        });
 
         $orders = Order::with(['outlet', 'user', 'items'])
             ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
@@ -119,10 +191,23 @@ class TransactionsPage extends Component
             ->when($this->paymentStatus, fn ($query) => $query->where('payment_status', $this->paymentStatus))
             ->when($this->dateFrom, fn ($query) => $query->whereDate('created_at', '>=', $this->dateFrom))
             ->when($this->dateTo, fn ($query) => $query->whereDate('created_at', '<=', $this->dateTo))
-            ->when($this->dueTodayOnly, fn ($query) => $query->whereDate('due_at', today())->whereNotIn('status', ['ready', 'completed', 'cancelled']))
-            ->when($this->dueTodayOnly, fn ($query) => $query->orderBy('due_at'), fn ($query) => $query->latest())
+            ->when($this->dueFilter === 'overdue', fn (Builder $query) => $query->where('due_at', '<', now())->whereNotIn('status', ['ready', 'completed', 'cancelled']))
+            ->when($this->dueFilter !== '' && $this->dueFilter !== 'overdue', fn (Builder $query) => $query->whereDate('due_at', $this->dueFilter)->whereNotIn('status', ['ready', 'completed', 'cancelled']))
+            ->when($this->dueFilter !== '', fn ($query) => $query->orderBy('due_at'), fn ($query) => $query->latest())
             ->paginate($this->perPage);
 
-        return view('livewire.transactions-page', ['orders' => $orders, 'outlets' => Outlet::where('is_active', true)->get(), 'dueTodayCount' => $dueTodayCount])->title('Transaksi — Laundry Pos');
+        $detailOrder = $this->detailOrderId
+            ? Order::with(['outlet', 'user', 'items'])
+                ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
+                ->find($this->detailOrderId)
+            : null;
+
+        return view('livewire.transactions-page', [
+            'orders' => $orders,
+            'detailOrder' => $detailOrder,
+            'outlets' => Outlet::where('is_active', true)->get(),
+            'overdueCount' => $overdueCount,
+            'dueDateOptions' => $dueDateOptions,
+        ])->title('Transaksi — Laundry Pos');
     }
 }

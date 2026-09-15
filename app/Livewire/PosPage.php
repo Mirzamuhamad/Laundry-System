@@ -182,6 +182,7 @@ class PosPage extends Component
         $this->synchronizeEmployeeOutlet();
         $customer = Customer::where(fn ($q) => $q->whereNull('outlet_id')->orWhere('outlet_id', $this->outletId))->findOrFail($id);
         $this->customerId = $customer->id;
+        $this->resetValidation('customerId');
         $this->showCustomer = false;
         $this->customerSearch = '';
     }
@@ -193,6 +194,7 @@ class PosPage extends Component
         $phone = preg_replace('/\D+/', '', $data['newCustomerPhone']);
         $customer = Customer::firstOrCreate(['phone' => $phone], ['name' => $data['newCustomerName'], 'address' => $data['newCustomerAddress'], 'outlet_id' => $this->outletId]);
         $this->customerId = $customer->id;
+        $this->resetValidation('customerId');
         $this->showNewCustomer = false;
         $this->showCustomer = false;
         $this->reset(['newCustomerName', 'newCustomerPhone', 'newCustomerAddress']);
@@ -211,6 +213,16 @@ class PosPage extends Component
         } $this->saving = true;
         try {
             $this->synchronizeEmployeeOutlet();
+            if (! $this->customerId) {
+                $message = 'Pilih pelanggan terlebih dahulu sebelum menyimpan transaksi.';
+
+                $this->showNewCustomer = false;
+                $this->showCustomer = true;
+                $this->addError('customerId', $message);
+                $this->dispatch('notify', $message);
+
+                return;
+            }
             if (! $this->refreshCartPricing()) {
                 return;
             }
