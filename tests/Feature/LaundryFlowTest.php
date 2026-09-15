@@ -177,6 +177,67 @@ class LaundryFlowTest extends TestCase
         $this->assertDatabaseHas('order_items', ['product_name' => 'Cuci Lipat', 'unit_price' => 8000, 'quantity' => 3]);
     }
 
+    public function test_qris_order_waits_for_confirmation_and_uses_the_final_total_in_its_qr(): void
+    {
+        config()->set('services.qris.static_payload', '00020101021126610014COM.GO-JEK.WWW01189360091439911088270210G9911088270303UMI51440014ID.CO.QRIS.WWW0215ID10264838858300303UMI5204721053033605802ID5925LaundryKlinTebet15, TEBET6015JAKARTA SELATAN61051281062070703A016304C15E');
+        ['cashier' => $cashier, 'product' => $product, 'customer' => $customer] = $this->setupBusiness();
+
+        $component = Livewire::actingAs($cashier)->test(PosPage::class)
+            ->call('addProduct', $product->id)
+            ->set('customerId', $customer->id)
+            ->set('discountValue', 4000)
+            ->call('selectPaymentMethod', 'qris')
+            ->call('saveOrder', true)
+            ->assertHasNoErrors()
+            ->assertSet('completedOrderId', null)
+            ->assertSet('printQrisAfterConfirmation', true)
+            ->assertDontSee('Scan untuk membayar')
+            ->assertDontSee('PEMBAYARAN QRIS')
+            ->assertSee('Total pembayaran')
+            ->assertSee('Rp20.000')
+            ->assertSee('https://quickchart.io/qr?', false)
+            ->assertNotDispatched('print-receipt');
+
+        $order = Order::latest('id')->firstOrFail();
+        $component->assertSet('qrisOrderId', $order->id);
+        $this->assertSame(0, $order->paid_amount);
+        $this->assertSame('unpaid', $order->payment_status);
+        $this->assertDatabaseCount('payments', 0);
+
+        $component
+            ->call('confirmQrisPayment')
+            ->assertSet('qrisOrderId', null)
+            ->assertSet('completedOrderId', $order->id)
+            ->assertSee('TRANSAKSI BERHASIL')
+            ->assertDispatched('print-receipt');
+
+        $order->refresh();
+        $this->assertSame(20000, $order->paid_amount);
+        $this->assertSame('paid', $order->payment_status);
+        $this->assertDatabaseHas('payments', ['order_id' => $order->id, 'method' => 'qris', 'amount' => 20000]);
+
+        $component
+            ->set('qrisOrderId', $order->id)
+            ->call('confirmQrisPayment');
+        $this->assertDatabaseCount('payments', 1);
+    }
+
+    public function test_qris_order_is_not_saved_when_the_merchant_payload_is_missing(): void
+    {
+        config()->set('services.qris.static_payload', null);
+        ['cashier' => $cashier, 'product' => $product, 'customer' => $customer] = $this->setupBusiness();
+
+        Livewire::actingAs($cashier)->test(PosPage::class)
+            ->call('addProduct', $product->id)
+            ->set('customerId', $customer->id)
+            ->call('selectPaymentMethod', 'qris')
+            ->call('saveOrder', false)
+            ->assertHasErrors(['qris'])
+            ->assertSee('Payload QRIS tidak memiliki CRC yang valid.');
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
     public function test_pos_cart_is_restored_after_leaving_and_returning_to_the_page(): void
     {
         ['cashier' => $cashier, 'product' => $product] = $this->setupBusiness();

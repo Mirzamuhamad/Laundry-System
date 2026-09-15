@@ -10,9 +10,11 @@ use App\Models\Payment;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Support\BluetoothReceipt;
+use App\Support\QrisPayload;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\On;
@@ -56,6 +58,10 @@ class PosPage extends Component
     public bool $saving = false;
 
     public ?int $completedOrderId = null;
+
+    public ?int $qrisOrderId = null;
+
+    public bool $printQrisAfterConfirmation = false;
 
     public function mount(): void
     {
@@ -177,6 +183,40 @@ class PosPage extends Component
             ->find($this->completedOrderId);
     }
 
+    #[Computed]
+    public function qrisOrder(): ?Order
+    {
+        if (! $this->qrisOrderId) {
+            return null;
+        }
+
+        return Order::with(['outlet', 'items'])
+            ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
+            ->find($this->qrisOrderId);
+    }
+
+    #[Computed]
+    public function qrisQrCodeUrl(): ?string
+    {
+        $order = $this->qrisOrder;
+
+        if (! $order) {
+            return null;
+        }
+
+        $payload = resolve(QrisPayload::class)->withAmount(
+            (string) config('services.qris.static_payload'),
+            $order->total,
+        );
+
+        return 'https://quickchart.io/qr?'.http_build_query([
+            'text' => $payload,
+            'size' => 360,
+            'margin' => 1,
+            'ecLevel' => 'M',
+        ]);
+    }
+
     public function selectCustomer(int $id): void
     {
         $this->synchronizeEmployeeOutlet();
@@ -206,6 +246,17 @@ class PosPage extends Component
         $this->paymentAmount = $this->total;
     }
 
+    public function selectPaymentMethod(string $method): void
+    {
+        abort_unless(in_array($method, ['cash', 'transfer', 'qris'], true), 422);
+
+        $this->paymentMethod = $method;
+
+        if ($method === 'qris') {
+            $this->paymentAmount = $this->total;
+        }
+    }
+
     public function saveOrder(bool $print = true): void
     {
         if ($this->saving) {
@@ -226,36 +277,126 @@ class PosPage extends Component
             if (! $this->refreshCartPricing()) {
                 return;
             }
+            $isQris = $this->paymentMethod === 'qris';
+
+            if ($isQris) {
+                if ($this->total < 1) {
+                    $this->addError('qris', 'Total transaksi QRIS harus lebih dari Rp0.');
+
+                    return;
+                }
+
+                try {
+                    resolve(QrisPayload::class)->withAmount(
+                        (string) config('services.qris.static_payload'),
+                        $this->total,
+                    );
+                } catch (InvalidArgumentException $exception) {
+                    $this->addError('qris', $exception->getMessage());
+
+                    return;
+                }
+
+                $this->paymentAmount = $this->total;
+            }
+
             $this->validate(['outletId' => 'required|exists:outlets,id', 'customerId' => 'required|exists:customers,id', 'cart' => 'required|array|min:1', 'paymentAmount' => 'required|integer|min:0|max:'.$this->total, 'paymentMethod' => 'required|in:cash,transfer,qris', 'notes' => 'nullable|max:1000']);
             $customer = Customer::findOrFail($this->customerId);
-            $order = DB::transaction(function () use ($customer) {
+            $order = DB::transaction(function () use ($customer, $isQris) {
                 $maxHours = collect($this->cart)->max('duration_hours') ?? 48;
-                $order = Order::create(['number' => 'TMP-'.Str::uuid(), 'outlet_id' => $this->outletId, 'customer_id' => $customer->id, 'user_id' => Auth::id(), 'customer_name' => $customer->name, 'customer_phone' => $customer->phone, 'subtotal' => $this->subtotal, 'discount_type' => $this->discountValue > 0 ? $this->discountType : null, 'discount_value' => $this->discountValue, 'discount_amount' => $this->discountAmount, 'total' => $this->total, 'paid_amount' => $this->paymentAmount, 'payment_status' => $this->paymentAmount <= 0 ? 'unpaid' : ($this->paymentAmount < $this->total ? 'partial' : 'paid'), 'status' => 'received', 'due_at' => now()->addHours($maxHours), 'notes' => $this->notes]);
+                $paidAmount = $isQris ? 0 : $this->paymentAmount;
+                $order = Order::create(['number' => 'TMP-'.Str::uuid(), 'outlet_id' => $this->outletId, 'customer_id' => $customer->id, 'user_id' => Auth::id(), 'customer_name' => $customer->name, 'customer_phone' => $customer->phone, 'subtotal' => $this->subtotal, 'discount_type' => $this->discountValue > 0 ? $this->discountType : null, 'discount_value' => $this->discountValue, 'discount_amount' => $this->discountAmount, 'total' => $this->total, 'paid_amount' => $paidAmount, 'payment_status' => $paidAmount <= 0 ? 'unpaid' : ($paidAmount < $this->total ? 'partial' : 'paid'), 'status' => 'received', 'due_at' => now()->addHours($maxHours), 'notes' => $this->notes]);
                 $order->update(['number' => 'LF-'.now()->format('ymd').'-'.str_pad($order->id, 5, '0', STR_PAD_LEFT)]);
                 foreach ($this->cart as $item) {
                     $order->items()->create(['product_id' => $item['product_id'], 'product_variant_id' => $item['product_variant_id'], 'product_name' => $item['name'], 'variant_name' => $item['variant_name'], 'duration_hours' => $item['duration_hours'], 'unit' => $item['unit'], 'quantity' => $item['quantity'], 'unit_price' => $item['price'], 'subtotal' => (int) round($item['price'] * $item['quantity'])]);
                 }
-                if ($this->paymentAmount > 0) {
-                    Payment::create(['order_id' => $order->id, 'user_id' => Auth::id(), 'method' => $this->paymentMethod, 'amount' => $this->paymentAmount, 'paid_at' => now()]);
+                if ($paidAmount > 0) {
+                    Payment::create(['order_id' => $order->id, 'user_id' => Auth::id(), 'method' => $this->paymentMethod, 'amount' => $paidAmount, 'paid_at' => now()]);
                 }
 
                 return $order;
             });
-            $url = route('transactions.receipt', $order);
-            $receiptText = resolve(BluetoothReceipt::class)->build($order);
             session()->forget($this->cartSessionKey());
             $this->reset(['cart', 'customerId', 'customerSearch', 'discountValue', 'paymentAmount', 'notes']);
-            $this->completedOrderId = $order->id;
             $this->discountType = 'nominal';
             $this->paymentMethod = 'cash';
-            $this->dispatch('notify', 'Transaksi '.$order->number.' berhasil disimpan.');
             $this->dispatch('order-saved');
+
+            if ($isQris) {
+                $this->qrisOrderId = $order->id;
+                $this->printQrisAfterConfirmation = $print;
+                $this->dispatch('notify', 'Transaksi '.$order->number.' menunggu pembayaran QRIS.');
+
+                return;
+            }
+
+            $this->completedOrderId = $order->id;
+            $this->dispatch('notify', 'Transaksi '.$order->number.' berhasil disimpan.');
+
             if ($print) {
-                $this->dispatch('print-receipt', text: $receiptText, fallbackUrl: $url);
+                $this->dispatch(
+                    'print-receipt',
+                    text: resolve(BluetoothReceipt::class)->build($order),
+                    fallbackUrl: route('transactions.receipt', $order),
+                );
             }
         } finally {
             $this->saving = false;
         }
+    }
+
+    public function confirmQrisPayment(): void
+    {
+        abort_unless($this->qrisOrderId, 404);
+
+        $orderId = $this->qrisOrderId;
+        $order = DB::transaction(function () use ($orderId): Order {
+            $order = Order::query()
+                ->when(! Auth::user()->isOwner(), fn ($query) => $query->where('outlet_id', Auth::user()->outlet_id))
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+
+            if ($order->payment_status !== 'paid') {
+                $amount = $order->balance;
+
+                if ($amount > 0) {
+                    Payment::create([
+                        'order_id' => $order->id,
+                        'user_id' => Auth::id(),
+                        'method' => 'qris',
+                        'amount' => $amount,
+                        'paid_at' => now(),
+                    ]);
+                }
+
+                $order->update([
+                    'paid_amount' => $order->total,
+                    'payment_status' => 'paid',
+                ]);
+            }
+
+            return $order->fresh(['outlet', 'items']);
+        });
+
+        $shouldPrint = $this->printQrisAfterConfirmation;
+        $this->qrisOrderId = null;
+        $this->printQrisAfterConfirmation = false;
+        $this->completedOrderId = $order->id;
+        $this->dispatch('notify', 'Pembayaran QRIS '.$order->number.' dikonfirmasi lunas.');
+
+        if ($shouldPrint) {
+            $this->dispatch(
+                'print-receipt',
+                text: resolve(BluetoothReceipt::class)->build($order),
+                fallbackUrl: route('transactions.receipt', $order),
+            );
+        }
+    }
+
+    public function closeQrisPayment(): void
+    {
+        $this->qrisOrderId = null;
+        $this->printQrisAfterConfirmation = false;
     }
 
     #[On('receipt-print-finished')]

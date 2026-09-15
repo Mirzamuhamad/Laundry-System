@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'qris' => [
+        'static_payload' => env('QRIS_STATIC_PAYLOAD'),
+    ],
+
 ];
